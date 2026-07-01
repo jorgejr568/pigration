@@ -1,7 +1,7 @@
 # Spec 2 — Full DDL Query Builder (`querybuilder`)
 
 **Date:** 2026-06-30
-**Module:** `github.com/jorgejr568/go-migration`
+**Module:** `github.com/jorgejr568/pigration`
 **Status:** Approved for implementation
 
 ## Overview

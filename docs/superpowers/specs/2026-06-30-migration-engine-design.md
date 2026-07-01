@@ -1,13 +1,13 @@
 # Spec 1 — Migration Engine + CLI + Config + Library API
 
 **Date:** 2026-06-30
-**Module:** `github.com/jorgejr568/go-migration`
+**Module:** `github.com/jorgejr568/pigration`
 **Status:** Approved for implementation
 
 ## Overview
 
 A database migration system for Go + Postgres where migrations are **Go code** that
-self-register via `init()`. Delivers a Cobra CLI (`dbmig`) for local/dev use and a
+self-register via `init()`. Delivers a Cobra CLI (`pigration`) for local/dev use and a
 first-class public library API (`migrator.Up/Down/Status`) usable directly from a
 production binary or app boot — the CLI commands are thin wrappers over the same
 library code path.
@@ -65,7 +65,7 @@ fixed and must not change without updating both specs.**
 
 - `migrator` — registry, runner, transaction handling, tracking table, public API,
   config loading, `Executor` interface, `MigrationFunc`, `RegisterOption`, `RunOption`.
-- `cmd/dbmig` + `internal/cli` — Cobra commands.
+- `cmd/pigration` + `internal/cli` — Cobra commands.
 - `internal/config` — `.db-migration.yaml` loading + `${}` interpolation + DSN assembly.
 - `internal/codegen` — templates for `init`, `make`, and the `go run` runner entrypoint.
 
@@ -98,6 +98,8 @@ migrations:
   dir: ./migrations
   package: migrations
   table: schema_migrations
+fresh:
+  allow: false                  # must be true (or PIGRATION_ALLOW_FRESH=1) for `fresh`
 ```
 
 ### Loading rules
@@ -193,6 +195,12 @@ func Up(ctx context.Context, pool *pgxpool.Pool, opts ...RunOption) (Result, err
 func Down(ctx context.Context, pool *pgxpool.Pool, opts ...RunOption) (Result, error)
 func Status(ctx context.Context, pool *pgxpool.Pool) ([]MigrationStatus, error)
 
+// Fresh drops the public schema (CASCADE), recreates it, then applies all migrations.
+// It returns ErrFreshNotAllowed unless the caller opts in (see Fresh section). The CLI
+// gates this on PIGRATION_ALLOW_FRESH=1; the library requires AllowFresh() explicitly.
+func Fresh(ctx context.Context, pool *pgxpool.Pool, opts ...RunOption) (Result, error)
+func AllowFresh() RunOption
+
 type RunOption func(*runConfig)
 func Steps(n int) RunOption
 func Batch(k int) RunOption
@@ -215,17 +223,18 @@ them from config. (Provide a `migrator.Options{Table string}` or a package-level
 implementer's choice, but the table name must be configurable and default to
 `schema_migrations`.)
 
-## CLI (`dbmig`, Cobra)
+## CLI (`pigration`, Cobra)
 
 Global flag: `--config` (default `./.db-migration.yaml`).
 
 | Command | Needs user code? | Behavior |
 |---|---|---|
-| `dbmig init` | no | Write `.db-migration.yaml` (default URL template) if absent; create `migrations/` dir; add `.db-migration/` to `.gitignore`. Idempotent; never overwrite an existing config without `--force`. |
-| `dbmig make <name>` | no | Render a timestamped migration file into `migrations/<ts>_<snake_name>.go` using the configured package name. |
-| `dbmig migrate [--steps N]` | yes | Generate runner entrypoint, `go run` it calling `migrator.Up`. |
-| `dbmig rollback [--steps N \| --batch K]` | yes | Same entrypoint calling `migrator.Down`. |
-| `dbmig status` | yes | Same entrypoint calling `migrator.Status`; print a table. |
+| `pigration init` | no | Write `.db-migration.yaml` (default URL template) if absent; create `migrations/` dir; add `.db-migration/` to `.gitignore`. Idempotent; never overwrite an existing config without `--force`. |
+| `pigration make <name>` | no | Render a timestamped migration file into `migrations/<ts>_<snake_name>.go` using the configured package name. |
+| `pigration migrate [--steps N]` | yes | Generate runner entrypoint, `go run` it calling `migrator.Up`. |
+| `pigration rollback [--steps N \| --batch K]` | yes | Same entrypoint calling `migrator.Down`. |
+| `pigration status` | yes | Same entrypoint calling `migrator.Status`; print a table. |
+| `pigration fresh [--force]` | yes | **Destructive.** Drop the `public` schema (CASCADE), recreate it, then apply all migrations from scratch. Guarded — see below. |
 
 ### Running user Go code (`migrate`/`rollback`/`status`)
 
@@ -242,6 +251,27 @@ Global flag: `--config` (default `./.db-migration.yaml`).
 3. `go run ./.db-migration/runner` with config passed via environment variables.
 4. The `./.db-migration/` dir is regenerated each run and is gitignored.
 
+### `fresh` (destructive reset)
+
+Behavior: `DROP SCHEMA public CASCADE; CREATE SCHEMA public;` then run `migrator.Up` for
+all migrations. This wipes **everything** in the public schema (tables, types, indexes,
+the tracking table itself), so it fully resets the database.
+
+**Double safety guard — both required to proceed:**
+
+1. **Hard prod refusal:** `fresh` refuses to run unless the environment variable
+   `PIGRATION_ALLOW_FRESH=1` is set (or `fresh.allow: true` in `.db-migration.yaml`).
+   Without it, the command exits non-zero with a message explaining the guard. This makes
+   accidental production wipes impossible without a deliberate opt-in. In the library, the
+   equivalent gate is the `migrator.AllowFresh()` run option; `Fresh` returns
+   `ErrFreshNotAllowed` otherwise.
+2. **Interactive confirmation:** even with the opt-in set, the CLI prompts
+   `This will DROP ALL data in schema "public". Type the database name to continue:` and
+   requires the user to type the target database name. `--force` skips only this prompt
+   (the env/config opt-in is still mandatory).
+
+`fresh` uses the same `go run` runner entrypoint as `migrate`, calling `migrator.Fresh`.
+
 ### Generated migration template (`make`)
 
 ```go
@@ -250,7 +280,7 @@ package migrations
 import (
     "context"
 
-    "github.com/jorgejr568/go-migration/migrator"
+    "github.com/jorgejr568/pigration/migrator"
 )
 
 func CreateUsers1719800000Up(ctx context.Context, tx migrator.Executor) error {
@@ -277,9 +307,24 @@ Function names are CamelCase `<Name><Timestamp>Up/Down`; the registered identity
 timestamp-prefixed snake name. For a non-transactional migration the template shows the
 `migrator.NonTransactional()` option in a comment.
 
+## Branding & README
+
+The project is **pigration** (π-gration — a pun on **pig** + migration and **π** + gration).
+Deliver a `README.md` featuring:
+
+- A hero with a **pig SVG** logo and the wordmark styled as **π**-gration (the Greek π
+  glyph leading "gration").
+- Quickstart: `go install .../cmd/pigration`, `pigration init`, `pigration make`,
+  `pigration migrate`, `pigration rollback`, `pigration status`, `pigration fresh`.
+- The config format (URL and discrete forms), the library-embedding example
+  (`migrator.Up(ctx, pool)`), and the transactional / `NonTransactional` semantics.
+- A short callout on `fresh` and its safety guards.
+
+The SVG should live in the repo (e.g. `docs/assets/pig.svg`) and render in the README.
+
 ## Error Handling
 
-- Config: missing file → clear message telling the user to run `dbmig init`. Missing DSN
+- Config: missing file → clear message telling the user to run `pigration init`. Missing DSN
   after interpolation → explicit error naming the empty field/env var.
 - Runner: any migration error is wrapped with the migration name and whether the tx was
   rolled back. Advisory-lock contention → "another migration is in progress".
