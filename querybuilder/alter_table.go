@@ -117,10 +117,12 @@ func (b *AlterTableBuilder) RenameTo(newName string) *AlterTableBuilder {
 	return b.addStandalone("RENAME TO " + quoteIdent(newName))
 }
 
-// ToSQL renders the ALTER TABLE statement(s), joined by "; ".
-func (b *AlterTableBuilder) ToSQL() (string, error) {
+// buildStatements assembles the ALTER TABLE statements as separate strings.
+// Combinable actions are merged into one comma-separated statement; standalone
+// actions (e.g. RENAME) each get their own statement.
+func (b *AlterTableBuilder) buildStatements() ([]string, error) {
 	if len(b.actions) == 0 {
-		return "", errors.New("querybuilder: AlterTable requires at least one action")
+		return nil, errors.New("querybuilder: AlterTable requires at least one action")
 	}
 
 	prefix := "ALTER TABLE " + quoteIdent(b.name)
@@ -136,7 +138,7 @@ func (b *AlterTableBuilder) ToSQL() (string, error) {
 
 	for _, a := range b.actions {
 		if a.err != nil {
-			return "", a.err
+			return nil, a.err
 		}
 		if a.standalone {
 			flush()
@@ -147,16 +149,23 @@ func (b *AlterTableBuilder) ToSQL() (string, error) {
 	}
 	flush()
 
+	return stmts, nil
+}
+
+// ToSQL renders the ALTER TABLE statement(s), joined by "; " for display.
+func (b *AlterTableBuilder) ToSQL() (string, error) {
+	stmts, err := b.buildStatements()
+	if err != nil {
+		return "", err
+	}
 	return strings.Join(stmts, "; "), nil
 }
 
-// statements returns each statement separately for execution.
+// statements returns each statement separately for execution. It builds the
+// slice directly rather than splitting ToSQL's joined output, so a clause body
+// that itself contains "; " (e.g. a default literal) is never torn apart.
 func (b *AlterTableBuilder) statements() ([]string, error) {
-	sql, err := b.ToSQL()
-	if err != nil {
-		return nil, err
-	}
-	return strings.Split(sql, "; "), nil
+	return b.buildStatements()
 }
 
 // Execute runs the ALTER TABLE statement(s).

@@ -99,7 +99,11 @@ func acquireLock(ctx context.Context, pool *pgxpool.Pool) (func(), error) {
 		return nil, ErrLocked
 	}
 	release := func() {
-		_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock($1)`, advisoryLockKey)
+		// Use a cancellation-immune context: if the caller's ctx was cancelled or
+		// timed out during the run, pgx would return before sending the UNLOCK,
+		// stranding this session-level advisory lock on the pooled connection.
+		unlockCtx := context.WithoutCancel(ctx)
+		_, _ = conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, advisoryLockKey)
 		conn.Release()
 	}
 	return release, nil

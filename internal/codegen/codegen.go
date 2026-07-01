@@ -10,8 +10,10 @@ import (
 	"unicode"
 )
 
-// splitWords splits an identifier-ish string into lowercase words, breaking on
-// spaces, hyphens, underscores, and camelCase boundaries.
+// splitWords splits an identifier-ish string into lowercase words. Any rune that
+// is not a letter or digit (spaces, hyphens, underscores, punctuation, quotes,
+// semicolons, dots, ...) is a separator and is dropped, so the words can only
+// contain safe identifier characters. Words also break on camelCase boundaries.
 func splitWords(s string) []string {
 	var words []string
 	var cur strings.Builder
@@ -24,16 +26,14 @@ func splitWords(s string) []string {
 	runes := []rune(s)
 	for i, r := range runes {
 		switch {
-		case r == ' ' || r == '-' || r == '_' || r == '\t':
-			flush()
-		case unicode.IsUpper(r):
-			// break before an uppercase run boundary
-			if cur.Len() > 0 && i > 0 && !unicode.IsUpper(runes[i-1]) {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			// break before an uppercase run boundary (camelCase splitting)
+			if unicode.IsUpper(r) && cur.Len() > 0 && i > 0 && !unicode.IsUpper(runes[i-1]) {
 				flush()
 			}
 			cur.WriteRune(r)
 		default:
-			cur.WriteRune(r)
+			flush()
 		}
 	}
 	flush()
@@ -107,9 +107,16 @@ func RenderMigration(pkg, rawName string, ts int64) (filename string, content st
 		return "", "", fmt.Errorf("migration name %q produced an empty identifier", rawName)
 	}
 	tsStr := strconv.FormatInt(ts, 10)
+	// FuncBase must be a valid Go identifier. CamelCase can start with a digit
+	// (e.g. name "2fa tokens"); prefix a letter so the generated function names
+	// always compile.
+	funcBase := CamelCase(rawName)
+	if r := []rune(funcBase); len(r) > 0 && !unicode.IsLetter(r[0]) {
+		funcBase = "M" + funcBase
+	}
 	data := MigrationData{
 		Package:  pkg,
-		FuncBase: CamelCase(rawName) + tsStr,
+		FuncBase: funcBase + tsStr,
 		Name:     tsStr + "_" + snake,
 	}
 	var b strings.Builder

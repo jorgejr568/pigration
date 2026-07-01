@@ -130,7 +130,9 @@ func References(table, column string, opts ...FKOption) ColumnModifier {
 func (c columnDef) typeSQL() string {
 	if c.autoIncrement {
 		switch c.typ.String() {
-		case "integer", "smallint":
+		case "smallint":
+			return "smallserial"
+		case "integer":
 			return "serial"
 		case "bigint":
 			return "bigserial"
