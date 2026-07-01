@@ -8,18 +8,10 @@ import (
 
 // quoteIdent wraps an identifier in double quotes, doubling any embedded
 // double quotes. e.g. `email` -> "email"; `a"b` -> "a""b".
+// Dotted names are quoted verbatim as a single identifier: schema-qualified
+// names (e.g. "billing.users") are not currently supported.
 func quoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-}
-
-// quoteQualified quotes each dot-separated part of a qualified name.
-// e.g. `billing.users` -> "billing"."users".
-func quoteQualified(name string) string {
-	parts := strings.Split(name, ".")
-	for i, p := range parts {
-		parts[i] = quoteIdent(p)
-	}
-	return strings.Join(parts, ".")
 }
 
 // quoteLiteral wraps a string in single quotes, doubling any embedded single

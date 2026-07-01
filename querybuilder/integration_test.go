@@ -33,7 +33,7 @@ func TestIntegrationRoundtrip(t *testing.T) {
 	must(CreateSchema("qb_billing").IfNotExists().Execute(ctx, pool))
 	must(CreateType("qb_role").AsEnum("admin", "member", "guest").Execute(ctx, pool))
 	must(CreateTable("qb_users").
-		ID("id", BigInt, WithAutoIncrement()).
+		ID("id", BigSerial).
 		Column("email", Text, NotNull(), Unique()).
 		Column("age", Int, WithUnsigned()).
 		Timestamps().Execute(ctx, pool))

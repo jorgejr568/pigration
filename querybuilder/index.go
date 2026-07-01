@@ -95,11 +95,7 @@ func (b *CreateIndexBuilder) ToSQL() (string, error) {
 
 // Execute runs the CREATE INDEX statement.
 func (b *CreateIndexBuilder) Execute(ctx context.Context, exec Execer) error {
-	sql, err := b.ToSQL()
-	if err != nil {
-		return err
-	}
-	return execStatements(ctx, exec, []string{sql})
+	return execBuilder(ctx, exec, b)
 }
 
 // DropIndexBuilder builds a DROP INDEX statement.
@@ -142,9 +138,5 @@ func (b *DropIndexBuilder) ToSQL() (string, error) {
 
 // Execute runs the DROP INDEX statement.
 func (b *DropIndexBuilder) Execute(ctx context.Context, exec Execer) error {
-	sql, err := b.ToSQL()
-	if err != nil {
-		return err
-	}
-	return execStatements(ctx, exec, []string{sql})
+	return execBuilder(ctx, exec, b)
 }

@@ -16,6 +16,10 @@ func TestCreateEnumNoValuesErrors(t *testing.T) {
 	if _, err := CreateType("user_role").ToSQL(); err == nil {
 		t.Fatal("expected error for no values")
 	}
+	// AsEnum called with an empty slice must also error (collapsed guard).
+	if _, err := CreateType("user_role").AsEnum().ToSQL(); err == nil {
+		t.Fatal("expected error for AsEnum with no values")
+	}
 }
 
 func TestAlterTypeAddValue(t *testing.T) {

@@ -13,6 +13,7 @@ var (
 	SmallInt    = ColumnType{"smallint"}
 	Int         = ColumnType{"integer"}
 	BigInt      = ColumnType{"bigint"}
+	SmallSerial = ColumnType{"smallserial"}
 	Serial      = ColumnType{"serial"}
 	BigSerial   = ColumnType{"bigserial"}
 	Real        = ColumnType{"real"}

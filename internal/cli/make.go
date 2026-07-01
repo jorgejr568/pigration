@@ -19,7 +19,7 @@ func newMakeCmd() *cobra.Command {
 		Short: "Scaffold a timestamped migration file",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(configPath(cmd))
+			cfg, err := loadConfig(cmd)
 			if err != nil {
 				return err
 			}
@@ -34,10 +34,8 @@ func runMake(cmd *cobra.Command, cfg *config.Config, name string, ts int64) erro
 	if err != nil {
 		return err
 	}
+	// config.Load guarantees Migrations.Dir is non-empty.
 	dir := cfg.Migrations.Dir
-	if dir == "" {
-		dir = "./migrations"
-	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating migrations dir: %w", err)
 	}

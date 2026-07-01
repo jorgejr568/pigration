@@ -36,8 +36,8 @@ func Register(name string, up, down MigrationFunc, opts ...RegisterOption) {
 	registry = append(registry, m)
 }
 
-// Registered returns a copy of the registered migrations sorted by name.
-func Registered() []migration {
+// registered returns a copy of the registered migrations sorted by name.
+func registered() []migration {
 	out := make([]migration, len(registry))
 	copy(out, registry)
 	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })

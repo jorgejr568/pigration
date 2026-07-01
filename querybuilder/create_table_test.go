@@ -7,7 +7,7 @@ import (
 
 func TestCreateTableBasic(t *testing.T) {
 	sql, err := CreateTable("users").
-		ID("id", BigInt, WithAutoIncrement()).
+		ID("id", BigSerial).
 		Column("email", Text, NotNull(), Unique()).
 		Column("age", Int, WithUnsigned()).
 		Timestamps().

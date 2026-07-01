@@ -170,7 +170,7 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 ```
 
 `Up`, `Down`, `Fresh`, and `Status` all take `...migrator.RunOption`
-(`Steps`, `Batch`, `AllowFresh`, `WithOptions` for a custom table name). Runs are
+(`Steps`, `Batch`, `AllowFresh`, `Table` for a custom table name). Runs are
 guarded by a Postgres advisory lock so two runners cannot race.
 
 ## `fresh` — destructive reset (double-guarded)

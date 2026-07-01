@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -25,14 +26,14 @@ func TestRunGeneratesEntrypoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	// prepareRunner should write .db-migration/runner/main.go without executing go run
-	path, err := prepareRunner(loadTestConfig(t))
-	if err != nil {
+	if err := prepareRunner(loadTestConfig(t)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path); err != nil {
+	p := filepath.Join(runnerDir, "main.go")
+	if _, err := os.Stat(p); err != nil {
 		t.Fatal("runner main.go not generated")
 	}
-	src, _ := os.ReadFile(path)
+	src, _ := os.ReadFile(p)
 	if !strings.Contains(string(src), "github.com/me/app/migrations") {
 		t.Fatal("wrong import")
 	}

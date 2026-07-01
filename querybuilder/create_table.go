@@ -77,11 +77,7 @@ func (b *CreateTableBuilder) ToSQL() (string, error) {
 	}
 	parts := make([]string, 0, len(b.cols)+len(b.tableConstraints))
 	for _, c := range b.cols {
-		def, err := c.definitionSQL()
-		if err != nil {
-			return "", err
-		}
-		parts = append(parts, def)
+		parts = append(parts, c.definitionSQL())
 	}
 	parts = append(parts, b.tableConstraints...)
 
@@ -99,11 +95,7 @@ func (b *CreateTableBuilder) ToSQL() (string, error) {
 
 // Execute runs the CREATE TABLE statement.
 func (b *CreateTableBuilder) Execute(ctx context.Context, exec Execer) error {
-	sql, err := b.ToSQL()
-	if err != nil {
-		return err
-	}
-	return execStatements(ctx, exec, []string{sql})
+	return execBuilder(ctx, exec, b)
 }
 
 // quoteColumnList quotes each column identifier and joins with commas.

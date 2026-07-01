@@ -24,6 +24,7 @@ func TestColumnTypesExtra(t *testing.T) {
 	cases := map[string]ColumnType{
 		"smallint":         SmallInt,
 		"integer":          Int,
+		"smallserial":      SmallSerial,
 		"serial":           Serial,
 		"bigserial":        BigSerial,
 		"real":             Real,

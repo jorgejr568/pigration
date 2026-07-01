@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -17,52 +16,45 @@ import (
 
 const runnerDir = ".db-migration/runner"
 
-// prepareRunner renders and writes the throwaway `go run` entrypoint. It returns
-// the path to the generated main.go. Pure filesystem — no execution.
-func prepareRunner(cfg *config.Config) (string, error) {
+// prepareRunner renders and writes the throwaway `go run` entrypoint to
+// runnerDir/main.go. Pure filesystem — no execution.
+func prepareRunner(cfg *config.Config) error {
 	importPath, err := codegen.ModuleImportPath("go.mod", cfg.Migrations.Dir)
 	if err != nil {
-		return "", err
+		return err
 	}
 	src, err := codegen.RenderRunner(importPath)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if err := os.MkdirAll(runnerDir, 0o755); err != nil {
-		return "", fmt.Errorf("creating runner dir: %w", err)
+		return fmt.Errorf("creating runner dir: %w", err)
 	}
 	mainPath := filepath.Join(runnerDir, "main.go")
 	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
-		return "", fmt.Errorf("writing runner: %w", err)
+		return fmt.Errorf("writing runner: %w", err)
 	}
-	return mainPath, nil
+	return nil
 }
 
 // runViaGoRun generates the entrypoint and executes `go run` against it, passing
-// configuration through environment variables.
-func runViaGoRun(cmd *cobra.Command, cfg *config.Config, pigCmd string, extraEnv map[string]string) error {
-	if _, err := prepareRunner(cfg); err != nil {
+// configuration through the PIGRATION_* env protocol. It is the single funnel
+// every DB-touching command passes through exactly once, so the url-vs-discrete
+// conflict warning is emitted here.
+func runViaGoRun(cmd *cobra.Command, cfg *config.Config, renv codegen.RunnerEnv) error {
+	if err := prepareRunner(cfg); err != nil {
 		return err
+	}
+	if cfg.URLConflicts() {
+		fmt.Fprintln(cmd.ErrOrStderr(), "pigration: database.url is set; ignoring discrete database.* fields")
 	}
 	dsn, err := cfg.DSN()
 	if err != nil {
 		return err
 	}
 
-	env := os.Environ()
-	env = append(env,
-		"PIGRATION_DSN="+dsn,
-		"PIGRATION_TABLE="+cfg.Migrations.Table,
-		"PIGRATION_CMD="+pigCmd,
-	)
-	for k, v := range extraEnv {
-		if v != "" {
-			env = append(env, k+"="+v)
-		}
-	}
-
 	c := exec.Command("go", "run", "./"+runnerDir)
-	c.Env = env
+	c.Env = renv.Environ(os.Environ(), dsn, cfg.Migrations.Table)
 	c.Stdout = cmd.OutOrStdout()
 	c.Stderr = cmd.ErrOrStderr()
 	c.Stdin = os.Stdin
@@ -82,22 +74,34 @@ func newRunCmd() []*cobra.Command {
 	}
 }
 
+// positiveFlag reads an int flag that is only meaningful when >= 1. An unset
+// flag returns 0 (the "use default behavior" sentinel); an explicitly-set
+// non-positive value is refused loudly, because silently falling back to the
+// default could e.g. roll back the latest batch when the user asked for a
+// specific one.
+func positiveFlag(cmd *cobra.Command, name string) (int, error) {
+	v, _ := cmd.Flags().GetInt(name)
+	if cmd.Flags().Changed(name) && v < 1 {
+		return 0, fmt.Errorf("--%s must be >= 1, got %d", name, v)
+	}
+	return v, nil
+}
+
 func newMigrateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Apply pending migrations",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(configPath(cmd))
+			cfg, err := loadConfig(cmd)
 			if err != nil {
 				return err
 			}
-			steps, _ := cmd.Flags().GetInt("steps")
-			extra := map[string]string{}
-			if steps > 0 {
-				extra["PIGRATION_STEPS"] = strconv.Itoa(steps)
+			steps, err := positiveFlag(cmd, "steps")
+			if err != nil {
+				return err
 			}
-			return runViaGoRun(cmd, cfg, "up", extra)
+			return runViaGoRun(cmd, cfg, codegen.RunnerEnv{Cmd: "up", Steps: steps})
 		},
 	}
 	cmd.Flags().Int("steps", 0, "apply only the next N migrations")
@@ -110,20 +114,19 @@ func newRollbackCmd() *cobra.Command {
 		Short: "Roll back the most recent batch (or --steps N / --batch K)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(configPath(cmd))
+			cfg, err := loadConfig(cmd)
 			if err != nil {
 				return err
 			}
-			steps, _ := cmd.Flags().GetInt("steps")
-			batch, _ := cmd.Flags().GetInt("batch")
-			extra := map[string]string{}
-			if steps > 0 {
-				extra["PIGRATION_STEPS"] = strconv.Itoa(steps)
+			steps, err := positiveFlag(cmd, "steps")
+			if err != nil {
+				return err
 			}
-			if batch > 0 {
-				extra["PIGRATION_BATCH"] = strconv.Itoa(batch)
+			batch, err := positiveFlag(cmd, "batch")
+			if err != nil {
+				return err
 			}
-			return runViaGoRun(cmd, cfg, "down", extra)
+			return runViaGoRun(cmd, cfg, codegen.RunnerEnv{Cmd: "down", Steps: steps, Batch: batch})
 		},
 	}
 	cmd.Flags().Int("steps", 0, "roll back the last N migrations")
@@ -137,11 +140,11 @@ func newStatusCmd() *cobra.Command {
 		Short: "Show applied and pending migrations",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(configPath(cmd))
+			cfg, err := loadConfig(cmd)
 			if err != nil {
 				return err
 			}
-			return runViaGoRun(cmd, cfg, "status", nil)
+			return runViaGoRun(cmd, cfg, codegen.RunnerEnv{Cmd: "status"})
 		},
 	}
 }
@@ -152,51 +155,32 @@ func newFreshCmd() *cobra.Command {
 		Short: "DESTRUCTIVE: drop the public schema and re-apply all migrations",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(configPath(cmd))
+			cfg, err := loadConfig(cmd)
 			if err != nil {
 				return err
 			}
 
-			allowed := cfg.Fresh.Allow || os.Getenv("PIGRATION_ALLOW_FRESH") == "1"
+			allowed := cfg.Fresh.Allow || os.Getenv(codegen.EnvAllowFresh) == "1"
 			if !allowed {
-				return fmt.Errorf("fresh refused: set fresh.allow: true in config or PIGRATION_ALLOW_FRESH=1")
+				return fmt.Errorf("fresh refused: set fresh.allow: true in config or %s=1", codegen.EnvAllowFresh)
 			}
 
 			force, _ := cmd.Flags().GetBool("force")
 			if !force {
-				dbName := targetDBName(cfg)
+				dbName := cfg.DBName()
+				if dbName == "" {
+					return fmt.Errorf("cannot determine database name for confirmation; re-run with --force")
+				}
 				if err := confirmFresh(cmd, dbName); err != nil {
 					return err
 				}
 			}
 
-			return runViaGoRun(cmd, cfg, "fresh", map[string]string{
-				"PIGRATION_ALLOW_FRESH": "1",
-			})
+			return runViaGoRun(cmd, cfg, codegen.RunnerEnv{Cmd: "fresh", AllowFresh: true})
 		},
 	}
 	cmd.Flags().Bool("force", false, "skip the interactive confirmation prompt")
 	return cmd
-}
-
-// targetDBName extracts the database name from the config for the confirmation
-// prompt, falling back to a placeholder when it cannot be determined.
-func targetDBName(cfg *config.Config) string {
-	if cfg.Database.Name != "" {
-		return cfg.Database.Name
-	}
-	if dsn, err := cfg.DSN(); err == nil {
-		if i := strings.LastIndex(dsn, "/"); i >= 0 {
-			name := dsn[i+1:]
-			if j := strings.IndexAny(name, "?"); j >= 0 {
-				name = name[:j]
-			}
-			if name != "" {
-				return name
-			}
-		}
-	}
-	return "the target database"
 }
 
 // confirmFresh prompts the user to type the database name to proceed.

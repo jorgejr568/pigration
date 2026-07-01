@@ -10,7 +10,7 @@ func TestRegisterOrdersByName(t *testing.T) {
 	noop := func(ctx context.Context, tx Executor) error { return nil }
 	Register("200_b", noop, noop)
 	Register("100_a", noop, noop)
-	got := Registered()
+	got := registered()
 	if got[0].name != "100_a" || got[1].name != "200_b" {
 		t.Fatalf("not sorted: %v", []string{got[0].name, got[1].name})
 	}
@@ -20,7 +20,7 @@ func TestNonTransactionalOption(t *testing.T) {
 	resetRegistry()
 	noop := func(ctx context.Context, tx Executor) error { return nil }
 	Register("100_x", noop, noop, NonTransactional())
-	if !Registered()[0].nonTransactional {
+	if !registered()[0].nonTransactional {
 		t.Fatal("expected nonTransactional=true")
 	}
 }

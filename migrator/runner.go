@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,12 +17,6 @@ const DefaultTable = "schema_migrations"
 // advisory lock guarding migration runs. Derived from "pigration".
 const advisoryLockKey int64 = 0x7069677261746e00
 
-// Options configures the tracking table used by the runner.
-type Options struct {
-	// Table is the tracking-table name; defaults to DefaultTable when empty.
-	Table string
-}
-
 // Result is returned by Up/Down/Fresh.
 type Result struct {
 	Applied    []string // migrations applied (Up/Fresh)
@@ -29,11 +24,12 @@ type Result struct {
 	Batch      int      // batch number assigned to this run (Up/Fresh)
 }
 
-// MigrationStatus describes the state of a single migration.
+// MigrationStatus describes the state of a single migration. Batch and AppliedAt
+// are zero values (0 and the zero Time) when Pending is true.
 type MigrationStatus struct {
 	Name      string
-	Batch     *int
-	AppliedAt *time.Time
+	Batch     int
+	AppliedAt time.Time
 	Pending   bool
 }
 
@@ -41,7 +37,7 @@ type MigrationStatus struct {
 type runConfig struct {
 	table      string
 	steps      int // 0 = all
-	batch      *int
+	batch      int // 0 = default/latest
 	allowFresh bool
 }
 
@@ -51,22 +47,20 @@ type RunOption func(*runConfig)
 // Steps limits Up/Down to n migrations.
 func Steps(n int) RunOption { return func(rc *runConfig) { rc.steps = n } }
 
-// Batch targets a specific batch number for Down.
-func Batch(k int) RunOption {
-	return func(rc *runConfig) {
-		v := k
-		rc.batch = &v
-	}
-}
+// Batch targets a specific batch number for Down. k must be >= 1; values <= 0
+// are ignored and Down falls back to the default (most recent batch).
+func Batch(k int) RunOption { return func(rc *runConfig) { rc.batch = k } }
 
 // AllowFresh opts in to the destructive Fresh operation.
 func AllowFresh() RunOption { return func(rc *runConfig) { rc.allowFresh = true } }
 
-// WithOptions applies an Options value (table name) as a RunOption.
-func WithOptions(o Options) RunOption {
+// Table overrides the tracking-table name. An empty name is ignored: the table
+// stays DefaultTable, since an empty identifier would produce malformed SQL at
+// runtime.
+func Table(name string) RunOption {
 	return func(rc *runConfig) {
-		if o.Table != "" {
-			rc.table = o.Table
+		if name != "" {
+			rc.table = name
 		}
 	}
 }
@@ -75,9 +69,6 @@ func resolveConfig(opts []RunOption) runConfig {
 	rc := runConfig{table: DefaultTable}
 	for _, opt := range opts {
 		opt(&rc)
-	}
-	if rc.table == "" {
-		rc.table = DefaultTable
 	}
 	return rc
 }
@@ -125,25 +116,23 @@ func ensureTable(ctx context.Context, pool *pgxpool.Pool, table string) error {
 
 // appliedSet returns the set of applied migration names.
 func appliedSet(ctx context.Context, pool *pgxpool.Pool, table string) (map[string]struct{}, error) {
-	rows, err := pool.Query(ctx, fmt.Sprintf(`SELECT name FROM %s`, table))
+	rows, _ := pool.Query(ctx, fmt.Sprintf(`SELECT name FROM %s`, table))
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
 		return nil, fmt.Errorf("loading applied migrations: %w", err)
 	}
-	defer rows.Close()
-	set := make(map[string]struct{})
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
 		set[name] = struct{}{}
 	}
-	return set, rows.Err()
+	return set, nil
 }
 
-// Up applies pending migrations, grouping them into a single new batch.
-func Up(ctx context.Context, pool *pgxpool.Pool, opts ...RunOption) (Result, error) {
-	rc := resolveConfig(opts)
+// runLocked enforces the invariant that every mutating entrypoint (Up/Down/Fresh)
+// validates the registry and holds the advisory lock for the entire duration of
+// fn. fn's Result must be propagated verbatim: Up and Down return partially
+// populated Results alongside errors, so this helper never rewrites it.
+func runLocked(ctx context.Context, pool *pgxpool.Pool, rc runConfig, fn func(runConfig) (Result, error)) (Result, error) {
 	if err := validateRegistry(); err != nil {
 		return Result{}, err
 	}
@@ -153,7 +142,14 @@ func Up(ctx context.Context, pool *pgxpool.Pool, opts ...RunOption) (Result, err
 	}
 	defer release()
 
-	return applyPending(ctx, pool, rc)
+	return fn(rc)
+}
+
+// Up applies pending migrations, grouping them into a single new batch.
+func Up(ctx context.Context, pool *pgxpool.Pool, opts ...RunOption) (Result, error) {
+	return runLocked(ctx, pool, resolveConfig(opts), func(rc runConfig) (Result, error) {
+		return applyPending(ctx, pool, rc.table, rc.steps)
+	})
 }
 
 // Fresh drops the public schema (CASCADE), recreates it, then applies all
@@ -161,40 +157,33 @@ func Up(ctx context.Context, pool *pgxpool.Pool, opts ...RunOption) (Result, err
 // passed. This is destructive: everything in the public schema is wiped.
 func Fresh(ctx context.Context, pool *pgxpool.Pool, opts ...RunOption) (Result, error) {
 	rc := resolveConfig(opts)
+	// ErrFreshNotAllowed must take precedence over ErrLocked, so this check sits
+	// outside runLocked and precedes lock acquisition.
 	if !rc.allowFresh {
 		return Result{}, ErrFreshNotAllowed
 	}
-	if err := validateRegistry(); err != nil {
-		return Result{}, err
-	}
-	release, err := acquireLock(ctx, pool)
-	if err != nil {
-		return Result{}, err
-	}
-	defer release()
-
-	if _, err := pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
-		return Result{}, fmt.Errorf("dropping public schema: %w", err)
-	}
-
-	// steps must not carry over into Fresh; apply everything.
-	rc.steps = 0
-	return applyPending(ctx, pool, rc)
+	return runLocked(ctx, pool, rc, func(rc runConfig) (Result, error) {
+		if _, err := pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
+			return Result{}, fmt.Errorf("dropping public schema: %w", err)
+		}
+		// Fresh always applies everything; steps must not carry over.
+		return applyPending(ctx, pool, rc.table, 0)
+	})
 }
 
 // applyPending ensures the table, computes pending migrations, and applies them
-// (up to rc.steps) in a fresh batch. Must be called while holding the lock.
-func applyPending(ctx context.Context, pool *pgxpool.Pool, rc runConfig) (Result, error) {
-	if err := ensureTable(ctx, pool, rc.table); err != nil {
+// (up to steps, 0 = all) in a fresh batch. Must be called while holding the lock.
+func applyPending(ctx context.Context, pool *pgxpool.Pool, table string, steps int) (Result, error) {
+	if err := ensureTable(ctx, pool, table); err != nil {
 		return Result{}, err
 	}
-	applied, err := appliedSet(ctx, pool, rc.table)
+	applied, err := appliedSet(ctx, pool, table)
 	if err != nil {
 		return Result{}, err
 	}
 
 	var pending []migration
-	for _, m := range Registered() {
+	for _, m := range registered() {
 		if _, ok := applied[m.name]; !ok {
 			pending = append(pending, m)
 		}
@@ -202,17 +191,17 @@ func applyPending(ctx context.Context, pool *pgxpool.Pool, rc runConfig) (Result
 
 	var nextBatch int
 	if err := pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT COALESCE(MAX(batch),0)+1 FROM %s`, rc.table)).Scan(&nextBatch); err != nil {
+		fmt.Sprintf(`SELECT COALESCE(MAX(batch),0)+1 FROM %s`, table)).Scan(&nextBatch); err != nil {
 		return Result{}, fmt.Errorf("computing next batch: %w", err)
 	}
 
-	if rc.steps > 0 && rc.steps < len(pending) {
-		pending = pending[:rc.steps]
+	if steps > 0 && steps < len(pending) {
+		pending = pending[:steps]
 	}
 
 	res := Result{Batch: nextBatch}
 	for _, m := range pending {
-		if err := applyOne(ctx, pool, rc.table, m, nextBatch); err != nil {
+		if err := applyOne(ctx, pool, table, m, nextBatch); err != nil {
 			return res, err
 		}
 		res.Applied = append(res.Applied, m.name)
@@ -220,36 +209,43 @@ func applyPending(ctx context.Context, pool *pgxpool.Pool, rc runConfig) (Result
 	return res, nil
 }
 
-// applyOne runs a single migration's up function and records it.
-func applyOne(ctx context.Context, pool *pgxpool.Pool, table string, m migration, batch int) error {
-	insert := fmt.Sprintf(`INSERT INTO %s (name, batch) VALUES ($1, $2)`, table)
-
+// runStep runs one migration function and its bookkeeping statement, either
+// inside a transaction (default) or directly against the pool (nonTransactional).
+// opLabel/bookLabel carry each caller's exact error wording so no message is
+// genericized.
+func runStep(ctx context.Context, pool *pgxpool.Pool, m migration, fn MigrationFunc, opLabel, bookLabel, bookkeepSQL string, args ...any) error {
 	if m.nonTransactional {
-		if err := m.up(ctx, pool); err != nil {
-			return fmt.Errorf("migration %q failed (non-transactional, not rolled back): %w", m.name, err)
+		if err := fn(ctx, pool); err != nil {
+			return fmt.Errorf("%s %q failed (non-transactional, not rolled back): %w", opLabel, m.name, err)
 		}
-		if _, err := pool.Exec(ctx, insert, m.name, batch); err != nil {
-			return fmt.Errorf("recording migration %q: %w", m.name, err)
+		if _, err := pool.Exec(ctx, bookkeepSQL, args...); err != nil {
+			return fmt.Errorf("%s %q: %w", bookLabel, m.name, err)
 		}
 		return nil
 	}
 
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("beginning tx for migration %q: %w", m.name, err)
+		return fmt.Errorf("beginning tx for %s %q: %w", opLabel, m.name, err)
 	}
-	if err := m.up(ctx, tx); err != nil {
-		_ = tx.Rollback(ctx)
-		return fmt.Errorf("migration %q failed (rolled back): %w", m.name, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := fn(ctx, tx); err != nil {
+		return fmt.Errorf("%s %q failed (rolled back): %w", opLabel, m.name, err)
 	}
-	if _, err := tx.Exec(ctx, insert, m.name, batch); err != nil {
-		_ = tx.Rollback(ctx)
-		return fmt.Errorf("recording migration %q (rolled back): %w", m.name, err)
+	if _, err := tx.Exec(ctx, bookkeepSQL, args...); err != nil {
+		return fmt.Errorf("%s %q (rolled back): %w", bookLabel, m.name, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing migration %q: %w", m.name, err)
+		return fmt.Errorf("committing %s %q: %w", opLabel, m.name, err)
 	}
 	return nil
+}
+
+// applyOne runs a single migration's up function and records it.
+func applyOne(ctx context.Context, pool *pgxpool.Pool, table string, m migration, batch int) error {
+	insert := fmt.Sprintf(`INSERT INTO %s (name, batch) VALUES ($1, $2)`, table)
+	return runStep(ctx, pool, m, m.up, "migration", "recording migration", insert, m.name, batch)
 }
 
 // Status returns the state of every registered migration and every
@@ -284,14 +280,12 @@ func Status(ctx context.Context, pool *pgxpool.Pool, opts ...RunOption) ([]Migra
 
 	seen := make(map[string]struct{})
 	var out []MigrationStatus
-	for _, m := range Registered() {
+	for _, m := range registered() {
 		seen[m.name] = struct{}{}
 		st := MigrationStatus{Name: m.name, Pending: true}
 		if r, ok := applied[m.name]; ok {
-			b := r.batch
-			at := r.appliedAt
-			st.Batch = &b
-			st.AppliedAt = &at
+			st.Batch = r.batch
+			st.AppliedAt = r.appliedAt
 			st.Pending = false
 		}
 		out = append(out, st)
@@ -301,9 +295,7 @@ func Status(ctx context.Context, pool *pgxpool.Pool, opts ...RunOption) ([]Migra
 		if _, ok := seen[name]; ok {
 			continue
 		}
-		b := r.batch
-		at := r.appliedAt
-		out = append(out, MigrationStatus{Name: name, Batch: &b, AppliedAt: &at, Pending: false})
+		out = append(out, MigrationStatus{Name: name, Batch: r.batch, AppliedAt: r.appliedAt, Pending: false})
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -320,36 +312,32 @@ func Status(ctx context.Context, pool *pgxpool.Pool, opts ...RunOption) ([]Migra
 // first error.
 func Down(ctx context.Context, pool *pgxpool.Pool, opts ...RunOption) (Result, error) {
 	rc := resolveConfig(opts)
-	if err := validateRegistry(); err != nil {
-		return Result{}, err
+	if rc.batch < 0 {
+		return Result{}, fmt.Errorf("batch must be >= 1, got %d", rc.batch)
 	}
-	release, err := acquireLock(ctx, pool)
-	if err != nil {
-		return Result{}, err
-	}
-	defer release()
-
-	if err := ensureTable(ctx, pool, rc.table); err != nil {
-		return Result{}, err
-	}
-
-	targets, err := downTargets(ctx, pool, rc)
-	if err != nil {
-		return Result{}, err
-	}
-
-	var res Result
-	for _, name := range targets {
-		m, ok := registeredByName(name)
-		if !ok {
-			return res, fmt.Errorf("cannot roll back %q: no longer registered", name)
+	return runLocked(ctx, pool, rc, func(rc runConfig) (Result, error) {
+		if err := ensureTable(ctx, pool, rc.table); err != nil {
+			return Result{}, err
 		}
-		if err := rollbackOne(ctx, pool, rc.table, m); err != nil {
-			return res, err
+
+		targets, err := downTargets(ctx, pool, rc)
+		if err != nil {
+			return Result{}, err
 		}
-		res.RolledBack = append(res.RolledBack, name)
-	}
-	return res, nil
+
+		var res Result
+		for _, name := range targets {
+			m, ok := registeredByName(name)
+			if !ok {
+				return res, fmt.Errorf("cannot roll back %q: no longer registered", name)
+			}
+			if err := rollbackOne(ctx, pool, rc.table, m); err != nil {
+				return res, err
+			}
+			res.RolledBack = append(res.RolledBack, name)
+		}
+		return res, nil
+	})
 }
 
 // downTargets returns the applied migration names to roll back, ordered most
@@ -358,9 +346,9 @@ func downTargets(ctx context.Context, pool *pgxpool.Pool, rc runConfig) ([]strin
 	var query string
 	var args []any
 	switch {
-	case rc.batch != nil:
+	case rc.batch > 0:
 		query = fmt.Sprintf(`SELECT name FROM %s WHERE batch = $1 ORDER BY id DESC`, rc.table)
-		args = []any{*rc.batch}
+		args = []any{rc.batch}
 	case rc.steps > 0:
 		query = fmt.Sprintf(`SELECT name FROM %s ORDER BY id DESC LIMIT $1`, rc.table)
 		args = []any{rc.steps}
@@ -368,53 +356,19 @@ func downTargets(ctx context.Context, pool *pgxpool.Pool, rc runConfig) ([]strin
 		query = fmt.Sprintf(`SELECT name FROM %s WHERE batch = (SELECT MAX(batch) FROM %s) ORDER BY id DESC`, rc.table, rc.table)
 	}
 
-	rows, err := pool.Query(ctx, query, args...)
+	rows, _ := pool.Query(ctx, query, args...)
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
 		return nil, fmt.Errorf("selecting rollback targets: %w", err)
 	}
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		names = append(names, name)
-	}
-	return names, rows.Err()
+	return names, nil
 }
 
 // rollbackOne runs a single migration's down function and removes its tracking
 // row.
 func rollbackOne(ctx context.Context, pool *pgxpool.Pool, table string, m migration) error {
 	del := fmt.Sprintf(`DELETE FROM %s WHERE name = $1`, table)
-
-	if m.nonTransactional {
-		if err := m.down(ctx, pool); err != nil {
-			return fmt.Errorf("rollback of %q failed (non-transactional, not rolled back): %w", m.name, err)
-		}
-		if _, err := pool.Exec(ctx, del, m.name); err != nil {
-			return fmt.Errorf("removing tracking row for %q: %w", m.name, err)
-		}
-		return nil
-	}
-
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning tx for rollback of %q: %w", m.name, err)
-	}
-	if err := m.down(ctx, tx); err != nil {
-		_ = tx.Rollback(ctx)
-		return fmt.Errorf("rollback of %q failed (rolled back): %w", m.name, err)
-	}
-	if _, err := tx.Exec(ctx, del, m.name); err != nil {
-		_ = tx.Rollback(ctx)
-		return fmt.Errorf("removing tracking row for %q (rolled back): %w", m.name, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing rollback of %q: %w", m.name, err)
-	}
-	return nil
+	return runStep(ctx, pool, m, m.down, "rollback of", "removing tracking row for", del, m.name)
 }
 
 // registeredByName returns the registered migration with the given name.

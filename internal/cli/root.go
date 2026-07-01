@@ -3,6 +3,8 @@ package cli
 
 import (
 	"github.com/spf13/cobra"
+
+	"github.com/jorgejr568/pigration/internal/config"
 )
 
 // DefaultConfigPath is the default location of the config file.
@@ -30,6 +32,12 @@ func configPath(cmd *cobra.Command) string {
 		return DefaultConfigPath
 	}
 	return p
+}
+
+// loadConfig loads the config for cmd, resolving the --config flag. The error is
+// returned unwrapped so CLI output matches config.Load exactly.
+func loadConfig(cmd *cobra.Command) (*config.Config, error) {
+	return config.Load(configPath(cmd))
 }
 
 // Execute runs the pigration CLI.

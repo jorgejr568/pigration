@@ -9,9 +9,6 @@ func TestQuoteIdent(t *testing.T) {
 	if quoteIdent(`we"ird`) != `"we""ird"` {
 		t.Fatal("escape")
 	}
-	if quoteQualified("billing.users") != `"billing"."users"` {
-		t.Fatal("qualified")
-	}
 }
 
 func TestQuoteLiteral(t *testing.T) {

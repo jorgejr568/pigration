@@ -25,29 +25,3 @@ func TestAlterTableStatementsDoNotSplitOnClauseSemicolons(t *testing.T) {
 		t.Fatalf("rename statement wrong: %q", stmts[1])
 	}
 }
-
-// Regression: WithAutoIncrement on SmallInt must yield smallserial, not serial.
-func TestAutoIncrementSmallIntUsesSmallSerial(t *testing.T) {
-	c := columnDef{name: "id", typ: SmallInt}
-	WithAutoIncrement()(&c)
-	got, err := c.definitionSQL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if norm(got) != `"id" smallserial` {
-		t.Fatalf("got %q, want %q", norm(got), `"id" smallserial`)
-	}
-	// integer and bigint mappings must remain unchanged.
-	ci := columnDef{name: "a", typ: Int}
-	WithAutoIncrement()(&ci)
-	gi, _ := ci.definitionSQL()
-	if norm(gi) != `"a" serial` {
-		t.Fatalf("int: got %q", norm(gi))
-	}
-	cb := columnDef{name: "b", typ: BigInt}
-	WithAutoIncrement()(&cb)
-	gb, _ := cb.definitionSQL()
-	if norm(gb) != `"b" bigserial` {
-		t.Fatalf("bigint: got %q", norm(gb))
-	}
-}

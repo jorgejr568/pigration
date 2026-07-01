@@ -10,7 +10,6 @@ import (
 // emitted as its own ALTER TABLE statement (e.g. RENAME).
 type alterAction struct {
 	clause     string
-	err        error
 	standalone bool
 }
 
@@ -41,12 +40,7 @@ func (b *AlterTableBuilder) AddColumn(name string, t ColumnType, mods ...ColumnM
 	for _, m := range mods {
 		m(&c)
 	}
-	def, err := c.definitionSQL()
-	if err != nil {
-		b.actions = append(b.actions, alterAction{err: err})
-		return b
-	}
-	return b.add("ADD COLUMN " + def)
+	return b.add("ADD COLUMN " + c.definitionSQL())
 }
 
 // DropColumn drops a column.
@@ -96,19 +90,12 @@ func (b *AlterTableBuilder) DropConstraint(name string) *AlterTableBuilder {
 
 // AddForeignKey adds a foreign-key constraint named fk_<table>_<column>.
 func (b *AlterTableBuilder) AddForeignKey(column, refTable, refColumn string, opts ...FKOption) *AlterTableBuilder {
-	ref := &fkRef{table: refTable, column: refColumn}
+	ref := fkRef{table: refTable, column: refColumn}
 	for _, o := range opts {
-		o(ref)
+		o(&ref)
 	}
 	clause := "ADD CONSTRAINT " + quoteIdent("fk_"+b.name+"_"+column) +
-		" FOREIGN KEY (" + quoteIdent(column) + ")" +
-		" REFERENCES " + quoteIdent(refTable) + " (" + quoteIdent(refColumn) + ")"
-	if ref.onDelete != nil {
-		clause += " ON DELETE " + string(*ref.onDelete)
-	}
-	if ref.onUpdate != nil {
-		clause += " ON UPDATE " + string(*ref.onUpdate)
-	}
+		" FOREIGN KEY (" + quoteIdent(column) + ") " + ref.referencesSQL()
 	return b.add(clause)
 }
 
@@ -117,10 +104,13 @@ func (b *AlterTableBuilder) RenameTo(newName string) *AlterTableBuilder {
 	return b.addStandalone("RENAME TO " + quoteIdent(newName))
 }
 
-// buildStatements assembles the ALTER TABLE statements as separate strings.
-// Combinable actions are merged into one comma-separated statement; standalone
-// actions (e.g. RENAME) each get their own statement.
-func (b *AlterTableBuilder) buildStatements() ([]string, error) {
+// statements assembles the ALTER TABLE statements as separate strings, one per
+// slice element for execution. Combinable actions are merged into one
+// comma-separated statement; standalone actions (e.g. RENAME) each get their
+// own statement. It builds the slice directly rather than splitting ToSQL's
+// joined output, so a clause body that itself contains "; " (e.g. a default
+// literal) is never torn apart.
+func (b *AlterTableBuilder) statements() ([]string, error) {
 	if len(b.actions) == 0 {
 		return nil, errors.New("querybuilder: AlterTable requires at least one action")
 	}
@@ -137,9 +127,6 @@ func (b *AlterTableBuilder) buildStatements() ([]string, error) {
 	}
 
 	for _, a := range b.actions {
-		if a.err != nil {
-			return nil, a.err
-		}
 		if a.standalone {
 			flush()
 			stmts = append(stmts, prefix+" "+a.clause)
@@ -154,18 +141,11 @@ func (b *AlterTableBuilder) buildStatements() ([]string, error) {
 
 // ToSQL renders the ALTER TABLE statement(s), joined by "; " for display.
 func (b *AlterTableBuilder) ToSQL() (string, error) {
-	stmts, err := b.buildStatements()
+	stmts, err := b.statements()
 	if err != nil {
 		return "", err
 	}
 	return strings.Join(stmts, "; "), nil
-}
-
-// statements returns each statement separately for execution. It builds the
-// slice directly rather than splitting ToSQL's joined output, so a clause body
-// that itself contains "; " (e.g. a default literal) is never torn apart.
-func (b *AlterTableBuilder) statements() ([]string, error) {
-	return b.buildStatements()
 }
 
 // Execute runs the ALTER TABLE statement(s).

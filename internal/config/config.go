@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -97,15 +98,12 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// DSN returns the Postgres connection string. If database.url is set it wins
-// (a warning is logged to stderr if discrete fields are also present).
-// Otherwise a DSN is assembled from the discrete params, requiring host, user,
-// and name.
+// DSN returns the Postgres connection string. If database.url is set it wins;
+// otherwise a DSN is assembled from the discrete params, requiring host, user,
+// and name. DSN is a pure function of the struct: Load owns defaults and the
+// URLConflicts warning, so DSN performs no terminal I/O.
 func (c *Config) DSN() (string, error) {
 	if c.Database.URL != "" {
-		if c.Database.Host != "" || c.Database.User != "" || c.Database.Name != "" {
-			fmt.Fprintln(os.Stderr, "pigration: database.url is set; ignoring discrete database.* fields")
-		}
 		return c.Database.URL, nil
 	}
 
@@ -117,11 +115,6 @@ func (c *Config) DSN() (string, error) {
 	}
 	if c.Database.Name == "" {
 		return "", fmt.Errorf("database DSN incomplete: database.name is empty (and database.url is unset)")
-	}
-
-	sslmode := c.Database.SSLMode
-	if sslmode == "" {
-		sslmode = "disable"
 	}
 
 	host := c.Database.Host
@@ -139,9 +132,37 @@ func (c *Config) DSN() (string, error) {
 	} else {
 		u.User = url.User(c.Database.User)
 	}
-	q := u.Query()
-	q.Set("sslmode", sslmode)
-	u.RawQuery = q.Encode()
+	// Load guarantees SSLMode is non-empty; for directly-constructed configs,
+	// omit the parameter rather than emit sslmode= (which pgx rejects).
+	if c.Database.SSLMode != "" {
+		q := u.Query()
+		q.Set("sslmode", c.Database.SSLMode)
+		u.RawQuery = q.Encode()
+	}
 
 	return u.String(), nil
+}
+
+// DBName returns the target database name for user-facing confirmation prompts,
+// or "" when it cannot be determined. It mirrors DSN's precedence: when
+// database.url is set, the name is parsed out of the URL; otherwise the discrete
+// database.name is used. The URL path is only trusted for postgres/postgresql
+// URLs, so a key/value DSN (host=... dbname=...) yields "" rather than leaking
+// the raw string.
+func (c *Config) DBName() string {
+	if c.Database.URL != "" {
+		u, err := url.Parse(c.Database.URL)
+		if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+			return ""
+		}
+		return strings.TrimPrefix(u.Path, "/")
+	}
+	return c.Database.Name
+}
+
+// URLConflicts reports whether database.url is set alongside discrete
+// database.* fields (which are then ignored). The CLI warns once when this holds.
+func (c *Config) URLConflicts() bool {
+	return c.Database.URL != "" &&
+		(c.Database.Host != "" || c.Database.User != "" || c.Database.Name != "")
 }

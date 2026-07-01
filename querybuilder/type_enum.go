@@ -10,7 +10,6 @@ import (
 type CreateTypeBuilder struct {
 	name       string
 	enumValues []string
-	isEnum     bool
 }
 
 // CreateType starts a CREATE TYPE builder.
@@ -20,18 +19,14 @@ func CreateType(name string) *CreateTypeBuilder {
 
 // AsEnum declares the type as an enum with the given values.
 func (b *CreateTypeBuilder) AsEnum(vals ...string) *CreateTypeBuilder {
-	b.isEnum = true
 	b.enumValues = append(b.enumValues, vals...)
 	return b
 }
 
 // ToSQL renders the CREATE TYPE statement.
 func (b *CreateTypeBuilder) ToSQL() (string, error) {
-	if !b.isEnum {
-		return "", errors.New("querybuilder: CreateType requires a variant (use AsEnum)")
-	}
 	if len(b.enumValues) == 0 {
-		return "", errors.New("querybuilder: CreateType enum requires at least one value")
+		return "", errors.New("querybuilder: CreateType requires at least one enum value (use AsEnum)")
 	}
 	quoted := make([]string, len(b.enumValues))
 	for i, v := range b.enumValues {
@@ -42,11 +37,7 @@ func (b *CreateTypeBuilder) ToSQL() (string, error) {
 
 // Execute runs the CREATE TYPE statement.
 func (b *CreateTypeBuilder) Execute(ctx context.Context, exec Execer) error {
-	sql, err := b.ToSQL()
-	if err != nil {
-		return err
-	}
-	return execStatements(ctx, exec, []string{sql})
+	return execBuilder(ctx, exec, b)
 }
 
 // AlterTypeBuilder builds an ALTER TYPE ... ADD VALUE statement.
@@ -89,56 +80,5 @@ func (b *AlterTypeBuilder) ToSQL() (string, error) {
 
 // Execute runs the ALTER TYPE statement.
 func (b *AlterTypeBuilder) Execute(ctx context.Context, exec Execer) error {
-	sql, err := b.ToSQL()
-	if err != nil {
-		return err
-	}
-	return execStatements(ctx, exec, []string{sql})
-}
-
-// DropTypeBuilder builds a DROP TYPE statement.
-type DropTypeBuilder struct {
-	name     string
-	ifExists bool
-	cascade  bool
-}
-
-// DropType starts a DROP TYPE builder.
-func DropType(name string) *DropTypeBuilder {
-	return &DropTypeBuilder{name: name}
-}
-
-// IfExists adds IF EXISTS.
-func (b *DropTypeBuilder) IfExists() *DropTypeBuilder {
-	b.ifExists = true
-	return b
-}
-
-// Cascade adds CASCADE.
-func (b *DropTypeBuilder) Cascade() *DropTypeBuilder {
-	b.cascade = true
-	return b
-}
-
-// ToSQL renders the DROP TYPE statement.
-func (b *DropTypeBuilder) ToSQL() (string, error) {
-	var sb strings.Builder
-	sb.WriteString("DROP TYPE ")
-	if b.ifExists {
-		sb.WriteString("IF EXISTS ")
-	}
-	sb.WriteString(quoteIdent(b.name))
-	if b.cascade {
-		sb.WriteString(" CASCADE")
-	}
-	return sb.String(), nil
-}
-
-// Execute runs the DROP TYPE statement.
-func (b *DropTypeBuilder) Execute(ctx context.Context, exec Execer) error {
-	sql, err := b.ToSQL()
-	if err != nil {
-		return err
-	}
-	return execStatements(ctx, exec, []string{sql})
+	return execBuilder(ctx, exec, b)
 }

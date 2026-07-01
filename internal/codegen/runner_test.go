@@ -1,6 +1,8 @@
 package codegen
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,13 +38,25 @@ func TestRenderRunnerCompiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The rendered runner must be syntactically valid Go.
+	if _, err := parser.ParseFile(token.NewFileSet(), "runner.go", src, parser.AllErrors); err != nil {
+		t.Fatalf("rendered runner does not parse: %v\n%s", err, src)
+	}
 	for _, want := range []string{
 		`_ "github.com/me/app/migrations"`,
 		`"github.com/jorgejr568/pigration/migrator"`,
 		"pgxpool.New", "os.Getenv",
+		// Calls the current migrator API, not the deleted WithOptions/Options.
+		"migrator.Table(table)",
+		// Env-var names are sourced from the codegen constants; a rename must
+		// keep the rendered runner and the CLI's producer side in lockstep.
+		EnvDSN, EnvTable, EnvCmd, EnvSteps, EnvBatch, EnvAllowFresh,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("runner missing %q", want)
 		}
+	}
+	if strings.Contains(src, "WithOptions") || strings.Contains(src, "migrator.Options") {
+		t.Error("runner references deleted WithOptions/Options API")
 	}
 }
