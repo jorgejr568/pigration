@@ -1,0 +1,27 @@
+<svg viewBox="0 0 240 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="pigration pig mascot">
+  <defs>
+    <style>
+      .pig { fill: #f28cb1; }
+      .pig-dark { fill: #e06a94; }
+      .ink { fill: #3a2230; }
+    </style>
+  </defs>
+
+  <!-- ears -->
+  <path class="pig-dark" d="M60 58 C48 24 24 24 30 54 C34 74 56 76 66 66 Z"/>
+  <path class="pig-dark" d="M180 58 C192 24 216 24 210 54 C206 74 184 76 174 66 Z"/>
+
+  <!-- head -->
+  <ellipse class="pig" cx="120" cy="112" rx="82" ry="70"/>
+
+  <!-- snout -->
+  <ellipse class="pig-dark" cx="120" cy="126" rx="40" ry="30"/>
+  <ellipse class="ink" cx="107" cy="126" rx="7" ry="10"/>
+  <ellipse class="ink" cx="133" cy="126" rx="7" ry="10"/>
+
+  <!-- eyes -->
+  <circle class="ink" cx="88" cy="92" r="8"/>
+  <circle class="ink" cx="152" cy="92" r="8"/>
+  <circle fill="#fff" cx="90" cy="89" r="2.5"/>
+  <circle fill="#fff" cx="154" cy="89" r="2.5"/>
+</svg>
