@@ -43,3 +43,23 @@ func TestMigrationsCreateTodosTable(t *testing.T) {
 		t.Fatalf("todos table not created (count=%d)", n)
 	}
 }
+
+func TestMigrationsAddDueDateAndPendingIndex(t *testing.T) {
+	pool := testPool(t)
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM information_schema.columns
+		 WHERE table_name = 'todos' AND column_name = 'due_date'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatal("due_date column missing")
+	}
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM pg_indexes WHERE indexname = 'idx_todos_pending'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatal("idx_todos_pending missing")
+	}
+}
