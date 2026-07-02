@@ -52,6 +52,9 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: go vet (example)
+        run: go vet -C examples/todo-app ./...
+
       - name: go build
         run: go build ./...
 
@@ -67,3 +70,6 @@ jobs:
           awk -v t="$total" 'BEGIN { exit (t + 0 < 95) ? 1 : 0 }' || {
             echo "coverage ${total}% is below the 95% floor"; exit 1;
           }
+
+      - name: example todo-app tests
+        run: go test -C examples/todo-app -p 1 -count=1 -race ./...

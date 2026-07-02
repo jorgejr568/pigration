@@ -16,11 +16,13 @@ test:
 ## migrator/CLI tests DROP SCHEMA public for isolation.
 test-all:
 	TEST_DATABASE_URL="$(DB_URL)" go test -p 1 -count=1 -race ./...
+	TEST_DATABASE_URL="$(DB_URL)" go test -C examples/todo-app -p 1 -count=1 -race ./...
 
 ## lint: gofmt + go vet
 lint:
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	go vet ./...
+	go vet -C examples/todo-app ./...
 	@echo lint OK
 
 ## cover: full-suite coverage report (opens the per-function breakdown)

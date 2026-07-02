@@ -19,6 +19,7 @@ pigration locally and get a PR merged.
 | `internal/cli/` | Cobra commands (`init`, `make`, `migrate`, `rollback`, `status`, `fresh`) |
 | `cmd/pigration/` | CLI entrypoint |
 | `docs/superpowers/` | Design specs and implementation plans (historical record) |
+| `examples/todo-app/` | Runnable example app (own module) dogfooding the CLI, library boot-migration, and all three migration styles |
 
 One architectural invariant to preserve: `querybuilder.Execer` must remain a
 strict subset of `migrator.Executor` (exactly `Exec`), and the two packages must

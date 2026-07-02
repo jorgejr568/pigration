@@ -1,0 +1,8 @@
+database:
+  url: ${DATABASE_URL}
+migrations:
+  dir: ./migrations
+  package: migrations
+  table: schema_migrations
+fresh:
+  allow: false
