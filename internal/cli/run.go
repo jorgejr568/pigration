@@ -187,7 +187,7 @@ func newFreshCmd() *cobra.Command {
 func confirmFresh(cmd *cobra.Command, dbName string) error {
 	fmt.Fprintf(cmd.OutOrStdout(),
 		"This will DROP ALL data in schema \"public\". Type the database name (%s) to continue: ", dbName)
-	reader := bufio.NewReader(os.Stdin)
+	reader := bufio.NewReader(cmd.InOrStdin())
 	line, _ := reader.ReadString('\n')
 	if strings.TrimSpace(line) != dbName {
 		return fmt.Errorf("confirmation did not match %q; aborting", dbName)
