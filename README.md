@@ -6,6 +6,10 @@
 
 **Go + Postgres database migrations as self-registering Go code.**
 
+[![CI](https://github.com/jorgejr568/pigration/actions/workflows/ci.yml/badge.svg)](https://github.com/jorgejr568/pigration/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/jorgejr568/pigration.svg)](https://pkg.go.dev/github.com/jorgejr568/pigration)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 </div>
 
 ---
@@ -173,6 +177,37 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 (`Steps`, `Batch`, `AllowFresh`, `Table` for a custom table name). Runs are
 guarded by a Postgres advisory lock so two runners cannot race.
 
+## The query builder
+
+The `querybuilder` package is a fluent Postgres DDL builder you can use inside
+migrations instead of raw SQL. Because its one-method `Execer` interface is a
+subset of `migrator.Executor`, the migration's `tx` passes straight in:
+
+```go
+import "github.com/jorgejr568/pigration/querybuilder"
+
+func CreateUsers1719800000Up(ctx context.Context, tx migrator.Executor) error {
+	return querybuilder.CreateTable("users").
+		ID("id", querybuilder.BigSerial).
+		Column("email", querybuilder.Text, querybuilder.NotNull(), querybuilder.Unique()).
+		Column("age", querybuilder.Int, querybuilder.WithUnsigned()). // CHECK (age >= 0)
+		Column("org_id", querybuilder.BigInt,
+			querybuilder.References("orgs", "id", querybuilder.WithOnDelete(querybuilder.Cascade))).
+		Timestamps(). // created_at + updated_at
+		Execute(ctx, tx)
+}
+```
+
+It covers tables (`CreateTable`, `AlterTable`, `DropTable`), indexes — including
+unique, partial, composite, and `Concurrently()` (pair that one with
+`migrator.NonTransactional()`) — enum types, schemas, and column modifiers
+(defaults, checks, generated columns, foreign keys with referential actions).
+Every builder exposes `ToSQL()` so SQL generation is pure and testable, and
+`querybuilder.Raw(sql, args...)` executes anything the builders don't cover:
+the builder is a convenience, never a cage. See the
+[package docs](https://pkg.go.dev/github.com/jorgejr568/pigration/querybuilder)
+for runnable examples.
+
 ## `fresh` — destructive reset (double-guarded)
 
 `fresh` runs `DROP SCHEMA public CASCADE; CREATE SCHEMA public;` and then re-applies
@@ -187,6 +222,13 @@ independent guards must both pass:
    the target database name before proceeding. `--force` skips only this prompt (the
    opt-in from guard #1 is still mandatory).
 
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the
+repository layout, how to run the test suite against a throwaway Postgres
+(`make db-up && make test-all`), and the conventions CI enforces (gofmt, vet,
+`-race`, and a 95% coverage floor against Postgres 14 and 16).
+
 ## License
 
-MIT
+[MIT](LICENSE)
